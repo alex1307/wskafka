@@ -1,0 +1,23 @@
+[package]
+name = "wskafka"
+version = "0.1.1"
+authors = ["Alexander Todorov <alexander.todorov@ayagasha.com>"]
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.0", features = ["macros", "sync", "rt-multi-thread"] }
+tokio-stream = "0.1.14"
+warp = "0.3.6"
+serde = {version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+futures = { version = "0.3", default-features = false }
+uuid = { version = "1.5.0", features = ["serde", "v4"] }
+rdkafka = "0.36.0"
+pretty_env_logger = "0.5"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+async-stream = "0.3.5"
+chrono = { version = "0.4", features = ["serde"] }
+log = { version = "0.4", features = ["max_level_info", "release_max_level_info"] }
+log4rs = "1.2.0"
+lazy_static = "1.4.0"
+

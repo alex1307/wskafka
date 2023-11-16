@@ -1,0 +1,196 @@
+    <!DOCTYPE html>
+    <html lang="en">
+        <head>
+            <title>Kafka listener</title>
+            <style>
+                .top-section {
+                    display: flex;
+                    justify-content: space-between;
+                    padding-bottom: 20px;
+                }
+        
+                .section {
+                    flex: 1;
+                    padding: 10px;
+                    border: 1px solid #ddd;
+                    margin-right: 10px;
+                }
+        
+                .section:last-child {
+                    margin-right: 0;
+                }
+        
+                .bottom-section {
+                    padding: 10px;
+                    border: 1px solid #ddd;
+                }
+                #messages {
+                    margin-top: 20px;
+                    background: #f9f9f9;
+                    padding: 10px;
+                    border: 1px solid #ddd;
+                    height: 150px; /* Adjust as needed */
+                    overflow-y: auto; /* Enable scrolling if content is too long */
+        }
+            </style>
+        </head>
+        <body>
+            <h1>Kafka listener</h1>
+            <div class="top-section">
+                <div id="connected">
+                    <input type="hidden" id="correlation_id" />
+                </div>
+                <div id = "connect_to_kafka" class="section">
+                    <p>Broker: <input type="text" id="connect_broker"/></p>
+                    <br>
+                    <p>Topic: <input type="text" id="connect_topic"/></p>
+                    <br>
+                    <p>Timeout: <input type="text" id="connect_timeout" /></p>
+                    <br>
+                    <button type="button" id="connectBtn">Connect</button>
+                </div>
+                <div id="publish" class="section">
+                    <h2>Publish Message</h2>
+                    <p>Topic: <input type="text" id="publish_topic"/></p>
+                    <br>
+                    <p>Key: <input type="text" id="publish_key"/></p>
+                    <br>
+                    <p>Message: <textarea id="publish_message"></textarea></p>
+                    <br>
+                    <button type="button" id="publishBtn">Publish</button>
+                </div>
+                
+            </div>
+            <div id="listener" class = "bottom-section">
+                <p>Topic: <input type="text" id="topic" alt="topic1, topic2, topic3,..."/></p>
+                <br>
+                <p>Group: <input type="text" id="group" /></p>
+                <br>
+                <p>Offset: <input type="text" id="offset" alt="latest, beginning or 100, 200, 300 etc."/></p>
+                <br>
+                <button type="button" id="send">Get messages...</button>
+                <div id="messages">
+                    <p><em>Messages....</em></p>
+                </div>
+            </div>
+            <script type="text/javascript">
+                const connect = document.getElementById('connect');
+                const listener = document.getElementById('listener');
+                const messages = document.getElementById('messages');
+                const send = document.getElementById('send'); 
+                const correlationId = document.getElementById('correlation_id');
+                const connectBtn = document.getElementById('connectBtn');
+                const publishButn = document.getElementById('publishBtn') // Added this line to get the button
+                const uri = 'ws://' + location.host + '/chat';  
+                const connect_uri = 'http://' + location.host + '/connect';
+                const ws = new WebSocket(uri);
+
+                function message(data) {
+                    const line = document.createElement('p');
+                    line.innerText = data;
+                    messages.appendChild(line);
+                }
+
+                ws.onopen = function() {
+                    messages.innerHTML = '<p><em>Connected!</em></p>';
+                };
+
+                ws.onmessage = function(msg) {
+                    message(msg.data);
+                };
+
+                ws.onclose = function() {
+                    messages.getElementsByTagName('em')[0].innerText = 'Disconnected!';
+                };
+
+                send.onclick = function() {
+                    const topic = document.getElementById('topic').value;
+                    const group = document.getElementById('group').value;
+                    const offset = document.getElementById('offset').value;
+
+                    const msg = {
+                        "topic": topic,
+                        "group": group,
+                        "offset": offset,
+                    };
+                    const msgString = JSON.stringify(msg);
+                    ws.send(msgString);
+
+                    message('<You>: ' + msgString);
+                };
+
+                connectBtn.onclick = function() {
+                    const broker = document.getElementById('connect_broker').value;
+                    const topic = document.getElementById('connect_topic').value;
+                    const timeoutInput = document.getElementById("connect_timeout");
+                    const timeout = parseInt(timeoutInput.value, 10); 
+                    if (isNaN(timeout)) {
+                        alert("Timeout must be a number");
+                        return;
+                    }
+                    const msg = {
+                        broker,
+                        topic,
+                        timeout,
+                    };
+                    fetch(connect_uri, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Accept": "application/json"
+                        },
+                        body: JSON.stringify(msg), 
+                    })
+                        .then((response) => response.json())
+                        .then((responseData) => {
+                            // Display the response data within the "connect" div
+                            const connectDiv = document.getElementById("connect_to_kafka");
+                            connectDiv.innerHTML = `<p><b>Connected</b></p><pre>${responseData.info}</pre>`;
+                            // Set the correlation id
+                            correlationId.value = responseData.correlation_id;
+                        })
+                        .catch((error) => {
+                            console.error("Error:", error);
+                        });
+                };
+
+                publishButn.onclick = function() {
+                    const topic = document.getElementById('publish_topic').value;
+                    const key = document.getElementById('publish_key').value;
+                    const message = document.getElementById('publish_message').value;
+                    const correlation_id = document.getElementById('correlation_id').value; 
+                    if (!topic || !message) {
+                        alert("Topic and message are required.");
+                        return;
+                    }
+
+                    const publishData = {
+                        topic,
+                        key,  // Include the key in the data being sent
+                        message,
+                        correlation_id,  // Include the correlation id
+                    };
+
+                    fetch('/publish', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json'
+                        },
+                        body: JSON.stringify(publishData)
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log('Success:', data);
+                        // Optionally, clear the inputs after successful publish
+                        document.getElementById('publish_message').value = '';
+                        document.getElementById('publish_key').value = '';
+                    })
+                    .catch((error) => {
+                        console.error('Error:', error);
+                    });
+                };
+
+            </script>
+        </body>
+    </html>
