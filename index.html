@@ -24,6 +24,55 @@
                     padding: 10px;
                     border: 1px solid #ddd;
                 }
+
+                .input-group {
+                    margin-bottom: 15px;
+                }
+
+                .input-group label {
+                    display: block;
+                    margin-bottom: 5px;
+                    font-weight: bold;
+                }
+
+                .input-group input {
+                    width: 75%;
+                    padding: 8px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                }
+
+                .connection-info {
+                    margin-top: 20px;
+                    padding: 10px;
+                    background: #f0f0f0;
+                    border: 1px solid #ddd;
+                }
+                button {
+                    background-color: #4CAF50; /* Green background */
+                    color: white; /* White text */
+                    padding: 10px 20px; /* Padding inside the button */
+                    border: none; /* No border */
+                    border-radius: 4px; /* Rounded corners */
+                    cursor: pointer; /* Pointer cursor on hover */
+                    transition: 0.3s; /* Smooth transition for hover effect */
+                }
+
+                .textarea-field {
+                    width: 75%;
+                    height: 150px; /* Adjustable based on your preference */
+                    resize: vertical; /* Allows vertical resizing */
+                }
+
+                button:hover {
+                    background-color: #45a049; /* Darker shade of green */
+                }
+
+                .hidden {
+                    display: none;
+                }
+
+
                 #messages {
                     margin-top: 20px;
                     background: #f9f9f9;
@@ -35,29 +84,64 @@
             </style>
         </head>
         <body>
-            <h1>Kafka listener</h1>
+            <h1>WSKafka Tool</h1>
             <div class="top-section">
-                <div id="connected">
+                <div id="connected" hidden="true">
                     <input type="hidden" id="correlation_id" />
                 </div>
-                <div id = "connect_to_kafka" class="section">
-                    <p>Broker: <input type="text" id="connect_broker"/></p>
-                    <br>
-                    <p>Topic: <input type="text" id="connect_topic"/></p>
-                    <br>
-                    <p>Timeout: <input type="text" id="connect_timeout" /></p>
-                    <br>
-                    <button type="button" id="connectBtn">Connect</button>
+                <div id="connect_to_kafka" class="section">
+                    <h2>Connect to Kafka</h2>
+            
+                    <!-- Connection Fields -->
+                    <div class="input-group">
+                        <label for="connect_broker">(*)Broker:</label>
+                        <input type="text" id="broker"/>
+                    </div>
+            
+                    <div class="input-group">
+                        <label for="user">User:</label>
+                        <input type="text" id="user"/>
+                    </div>
+            
+                    <div class="input-group">
+                        <label for="password">Password:</label>
+                        <input type="password" id="password"/>
+                    </div>
+            
+                    <div class="input-group">
+                        <label for="protocol">Protocol:</label>
+                        <input type="text" id="protocol"/>
+                    </div>
+            
+                    <div class="input-group">
+                        <label for="mechanism">Mechanism:</label>
+                        <input type="text" id="mechanism"/>
+                    </div>
+            
+                    <button type="button" id="connectBtn" class="button" >Connect</button>
+                    <button type="button" id="offsetBtn" class="button">Offsets</button>
+                    <!-- Connection Info -->
+                    <div class="connection-info" id="connection_info">
+                        <p>Connection information will appear here...</p>
+                    </div>
                 </div>
                 <div id="publish" class="section">
                     <h2>Publish Message</h2>
-                    <p>Topic: <input type="text" id="publish_topic"/></p>
-                    <br>
-                    <p>Key: <input type="text" id="publish_key"/></p>
-                    <br>
-                    <p>Message: <textarea id="publish_message"></textarea></p>
-                    <br>
-                    <button type="button" id="publishBtn">Publish</button>
+                
+                    <div class="input-group">
+                        <label for="publish_topic">Topic:</label>
+                        <input type="text" id="publish_topic" class="input-field"/>
+                    </div>
+                
+                    <div class="input-group">
+                        <label for="publish_message">Message:</label>
+                        <textarea id="publish_message" class="textarea-field"></textarea>
+                    </div>
+                
+                    <button type="button" id="publishBtn" class="button">Publish</button>
+                    <div class="publish-info" id="publish_info">
+                        <p>Sending messages information will appear here...</p>
+                    </div>
                 </div>
                 
             </div>
@@ -80,9 +164,11 @@
                 const send = document.getElementById('send'); 
                 const correlationId = document.getElementById('correlation_id');
                 const connectBtn = document.getElementById('connectBtn');
-                const publishButn = document.getElementById('publishBtn') // Added this line to get the button
+                const publishBtn = document.getElementById('publishBtn') // Added this line to get the button
+                const offsetBtn = document.getElementById('offsetBtn') // Added this line to get the button
                 const uri = 'ws://' + location.host + '/chat';  
                 const connect_uri = 'http://' + location.host + '/connect';
+                const offset_uri = 'http://' + location.host + '/offset';
                 const ws = new WebSocket(uri);
 
                 function message(data) {
@@ -119,20 +205,42 @@
                     message('<You>: ' + msgString);
                 };
 
+                offsetBtn.onclick = function() {
+
+                    const correlation_id = document.getElementById('correlation_id').value;
+                    fetch(offset_uri, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Accept": "application/json"
+                        },
+                        body: JSON.stringify({correlation_id}), 
+                    })
+                        .then((response) => response.json())
+                        .then((responseData) => {
+                            // Display the response data within the "connect" div
+                            const connectDiv = document.getElementById("connection_info");
+                            connectDiv.innerHTML = connectDiv.innerHTML + `<pre>${responseData.info}</pre>`;
+                        })
+                        .catch((error) => {
+                            console.error("Error:", error);
+                        });
+                };
+
                 connectBtn.onclick = function() {
-                    const broker = document.getElementById('connect_broker').value;
-                    const topic = document.getElementById('connect_topic').value;
-                    const timeoutInput = document.getElementById("connect_timeout");
-                    const timeout = parseInt(timeoutInput.value, 10); 
-                    if (isNaN(timeout)) {
-                        alert("Timeout must be a number");
-                        return;
-                    }
-                    const msg = {
-                        broker,
-                        topic,
-                        timeout,
-                    };
+                    const broker = document.getElementById('broker').value;
+                    const user = document.getElementById('user').value;
+                    const password = document.getElementById('password').value;
+                    const protocol = document.getElementById('protocol').value;
+                    const mechanism = document.getElementById('mechanism').value;
+                    let msg = {};
+
+                    if (broker) msg.broker = broker;
+                    if (user) msg.user = user;
+                    if (password) msg.password = password;
+                    if (protocol) msg.protocol = protocol;
+                    if (mechanism) msg.mechanism = mechanism;
+
                     fetch(connect_uri, {
                         method: "POST",
                         headers: {
@@ -144,8 +252,8 @@
                         .then((response) => response.json())
                         .then((responseData) => {
                             // Display the response data within the "connect" div
-                            const connectDiv = document.getElementById("connect_to_kafka");
-                            connectDiv.innerHTML = `<p><b>Connected</b></p><pre>${responseData.info}</pre>`;
+                            const connectDiv = document.getElementById("connection_info");
+                            connectDiv.innerHTML = `<p><b>Connected:</b></p><pre>${responseData.info}</pre>`;
                             // Set the correlation id
                             correlationId.value = responseData.correlation_id;
                         })
@@ -154,9 +262,8 @@
                         });
                 };
 
-                publishButn.onclick = function() {
+                publishBtn.onclick = function() {
                     const topic = document.getElementById('publish_topic').value;
-                    const key = document.getElementById('publish_key').value;
                     const message = document.getElementById('publish_message').value;
                     const correlation_id = document.getElementById('correlation_id').value; 
                     if (!topic || !message) {
@@ -166,7 +273,6 @@
 
                     const publishData = {
                         topic,
-                        key,  // Include the key in the data being sent
                         message,
                         correlation_id,  // Include the correlation id
                     };
@@ -182,9 +288,9 @@
                     .then(response => response.json())
                     .then(data => {
                         console.log('Success:', data);
-                        // Optionally, clear the inputs after successful publish
                         document.getElementById('publish_message').value = '';
-                        document.getElementById('publish_key').value = '';
+                        const mesage = `<p><b>Published:</b></p><pre>${data.message}</pre><p>`;
+                        document.getElementById('publish_info').innerHTML = mesage;
                     })
                     .catch((error) => {
                         console.error('Error:', error);

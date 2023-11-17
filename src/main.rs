@@ -8,7 +8,7 @@ use std::time::{self, Duration};
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use lazy_static::lazy_static;
 use log::info;
-use rdkafka_client::{metadata, read_from_kafka, KafkaClient};
+use rdkafka_client::{read_from_kafka, KafkaClient};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::timeout;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -18,6 +18,7 @@ use warp::Filter;
 
 use crate::handler::connect_handler;
 use crate::handler::message_handler;
+use crate::handler::offset_handler;
 use crate::utils::configure_log4rs;
 
 pub mod handler;
@@ -34,8 +35,6 @@ type Clients = Arc<RwLock<HashMap<String, KafkaClient>>>;
 #[tokio::main]
 async fn main() {
     configure_log4rs("config/dev_log4rs.yml");
-    let txt = metadata("localhost:9094", time::Duration::from_secs(15), true);
-    info!("{}", txt);
     // Keep track of all connected users, key is usize, value
     // is a websocket sender.
     let topics = Topics::default();
@@ -48,6 +47,12 @@ async fn main() {
         .and(warp::body::json())
         .and(with_clients(clients.clone()))
         .and_then(connect_handler);
+    let offset = warp::path("offset");
+    let offset_routes = offset
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(with_clients(clients.clone()))
+        .and_then(offset_handler);
 
     let publish = warp::path("publish");
     let publish_routes = publish
@@ -75,6 +80,7 @@ async fn main() {
     let routes = index
         .or(chat)
         .or(connect_routes)
+        .or(offset_routes)
         .or(publish_routes)
         .with(warp::cors().allow_any_origin());
 

@@ -15,15 +15,13 @@ pub struct RegisterResponse {
 pub struct Event {
     correlation_id: String,
     topic: String,
-    key: String,
     message: String,
 }
 #[derive(Serialize, Debug, Deserialize)]
 pub struct ConnectRequest {
-    correlation_id: Option<String>,
     broker: String,
+    correlation_id: Option<String>,
     topic: Option<String>,
-    timeout: Option<u64>,
     username: Option<String>,
     password: Option<String>,
     group: Option<String>,
@@ -33,13 +31,18 @@ pub struct ConnectRequest {
 }
 
 #[derive(Serialize, Debug, Deserialize)]
+pub struct OffsetRequest {
+    correlation_id: String,
+}
+
+#[derive(Serialize, Debug, Deserialize)]
 pub struct ConnectResponse {
     info: String,
     correlation_id: String,
 }
 #[derive(Serialize, Debug)]
 pub struct SendResponse {
-    status: Vec<(i32, i64)>,
+    message: String,
 }
 
 #[derive(Debug)]
@@ -121,6 +124,35 @@ pub async fn connect_handler(
     }))
 }
 
+pub async fn offset_handler(
+    body: OffsetRequest,
+    clients: Clients,
+) -> Result<impl Reply, Rejection> {
+    let correlation_id = body.correlation_id;
+    let found = clients.read().await.get(&correlation_id).cloned();
+    info!("correlation_id: {}", &correlation_id);
+    let kafka = if let Some(client) = found {
+        client.clone()
+    } else {
+        return Err(warp::reject::custom(AppErr {
+            reason: "Please reconnect. We didn't find any available connection...".to_string(),
+        }));
+    };
+
+    let offset = match kafka.get_offsets() {
+        Ok(data) => data,
+        Err(e) => {
+            return Err(warp::reject::custom(AppErr {
+                reason: e.to_string(),
+            }))
+        }
+    };
+    Ok(json(&ConnectResponse {
+        info: offset,
+        correlation_id,
+    }))
+}
+
 pub async fn message_handler(body: Event, clients: Clients) -> Result<impl Reply, Rejection> {
     let found = clients.read().await.get(&body.correlation_id).cloned();
 
@@ -142,5 +174,5 @@ pub async fn message_handler(body: Event, clients: Clients) -> Result<impl Reply
     }
     info!("messages: {:?}", messages);
     let response = kafka.send_messages(&body.topic, messages).await;
-    Ok(json(&SendResponse { status: response }))
+    Ok(json(&SendResponse { message: response }))
 }

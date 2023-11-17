@@ -3,6 +3,7 @@ extern crate rdkafka;
 use std::collections::HashMap;
 use std::time::Duration;
 
+use chrono::format;
 use log::info;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::BaseConsumer;
@@ -13,6 +14,7 @@ use rdkafka::TopicPartitionList;
 use futures::{stream, Stream, StreamExt};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use tokio::sync::mpsc::{self};
+use warp::filters::header::value;
 
 #[derive(Debug, Clone)]
 pub struct KafkaClient {
@@ -250,7 +252,7 @@ impl KafkaClient {
         &mut self,
         topic: &str,
         messages: HashMap<String, String>,
-    ) -> Vec<(i32, i64)> {
+    ) -> String {
         info!(
             "Sending messages to kafka broker: {} and topic: {}",
             &self.brokers, topic
@@ -260,7 +262,7 @@ impl KafkaClient {
             Ok(producer) => producer,
             Err(e) => panic!("Producer creation error: {}", e),
         };
-
+        let total_number = &messages.len();
         let mut messages_to_send: Vec<_> = vec![];
         for (key, value) in messages {
             let cloned_key = key.clone();
@@ -282,122 +284,34 @@ impl KafkaClient {
         }
 
         // This loop will wait until all delivery statuses have been received.
-        let mut response = vec![];
+
+        let mut last_offset = 0;
+        let mut success_counter = 0;
+        let mut err_counter = 0;
+
         for message in messages_to_send {
             match message.await {
-                Ok(status) => {
-                    info!("Future completed. Result: {:?}", status);
-                    response.push(status);
+                Ok((_partition, offset)) => {
+                    if offset > last_offset {
+                        last_offset = offset;
+                    }
+                    success_counter += 1;
                 }
                 Err(e) => {
                     info!("Future completed. Result: {:?}", e);
+                    err_counter += 1;
                 }
             }
         }
-        response
+        let response = vec![
+            format!("Total messages: {}", total_number),
+            format!("Success: {}", success_counter),
+            format!("Errors: {}", err_counter),
+            format!("Last offset: {}", last_offset),
+        ];
+        info!("Response: {:?}", response);
+        response.join("\n")
     }
-}
-pub fn metadata(brokers: &str, timeout: Duration, fetch_offsets: bool) -> String {
-    let consumer: BaseConsumer = ClientConfig::new()
-        .set("bootstrap.servers", brokers)
-        .create()
-        .expect("Consumer creation failed");
-
-    eprintln!("Consumer created");
-    let mut txt: Vec<String> = Vec::new();
-    let metadata = consumer
-        .fetch_metadata(None, timeout)
-        .expect("Failed to fetch metadata");
-
-    let mut message_count = 0;
-
-    eprintln!("Cluster information:");
-    txt.push(format!("Cluster information:"));
-    eprintln!("  Broker count: {}", metadata.brokers().len());
-    txt.push(format!("Broker count: {}", metadata.brokers().len()));
-    eprintln!("  Topics count: {}", metadata.topics().len());
-    txt.push(format!("  Topics count: {}", metadata.topics().len()));
-    eprintln!("  Metadata broker name: {}", metadata.orig_broker_name());
-    txt.push(format!(
-        "  Metadata broker name: {}",
-        metadata.orig_broker_name()
-    ));
-    eprintln!("  Metadata broker id: {}\n", metadata.orig_broker_id());
-    txt.push(format!(
-        "  Metadata broker id: {}\n",
-        metadata.orig_broker_id()
-    ));
-
-    eprintln!("Brokers:");
-    for broker in metadata.brokers() {
-        eprintln!(
-            "  Id: {}  Host: {}:{}  ",
-            broker.id(),
-            broker.host(),
-            broker.port()
-        );
-        txt.push(format!(
-            "  Id: {}  Host: {}:{}  ",
-            broker.id(),
-            broker.host(),
-            broker.port()
-        ));
-    }
-
-    eprintln!("\nTopics:");
-    txt.push(format!("\nTopics:"));
-    for topic in metadata.topics() {
-        if topic.name().starts_with(r#"__"#) {
-            continue;
-        }
-        eprintln!("  Topic: {}  Err: {:?}", topic.name(), topic.error());
-        txt.push(format!(
-            "  Topic: {}  Err: {:?}",
-            topic.name(),
-            topic.error()
-        ));
-        for partition in topic.partitions() {
-            eprintln!(
-                "     Partition: {}  Leader: {}  Replicas: {:?}  ISR: {:?}  Err: {:?}",
-                partition.id(),
-                partition.leader(),
-                partition.replicas(),
-                partition.isr(),
-                partition.error()
-            );
-            txt.push(format!(
-                "     Partition: {}  Leader: {}  Replicas: {:?}  ISR: {:?}  Err: {:?}",
-                partition.id(),
-                partition.leader(),
-                partition.replicas(),
-                partition.isr(),
-                partition.error()
-            ));
-            if fetch_offsets {
-                let (low, high) = consumer
-                    .fetch_watermarks(topic.name(), partition.id(), Duration::from_secs(1))
-                    .unwrap_or((-1, -1));
-                eprintln!(
-                    "       Low watermark: {}  High watermark: {} (difference: {})",
-                    low,
-                    high,
-                    high - low
-                );
-                txt.push(format!(
-                    "       Low watermark: {}  High watermark: {} (difference: {})",
-                    low,
-                    high,
-                    high - low
-                ));
-                message_count += high - low;
-            }
-        }
-        if fetch_offsets {
-            eprintln!("     Total message count: {}", message_count);
-            txt.push(format!("     Total message count: {}", message_count));
-        }
-    }
-    txt.join("\n")
 }
 
 pub async fn read_from_kafka(topic: Vec<String>, group: &str) -> impl Stream<Item = String> {
@@ -443,45 +357,6 @@ pub async fn read_from_kafka(topic: Vec<String>, group: &str) -> impl Stream<Ite
         }
     });
     stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|t| (t, rx)) })
-}
-
-pub async fn produce(brokers: &str, topic_name: &str, messages: Vec<String>) {
-    let producer: &FutureProducer = &ClientConfig::new()
-        .set("bootstrap.servers", brokers)
-        .set("message.timeout.ms", "5000")
-        .create()
-        .expect("Producer creation error");
-
-    // This loop is non blocking: all messages will be sent one after the other, without waiting
-    // for the results.
-    let futures = messages
-        .iter()
-        .map(|i| async move {
-            // The send operation on the topic returns a future, which will be
-            // completed once the result or failure from Kafka is received.
-            let delivery_status = producer
-                .send(
-                    FutureRecord::to(topic_name)
-                        .payload(&format!("Message {}", i))
-                        .key(&format!("Key {}", i))
-                        .headers(OwnedHeaders::new().insert(Header {
-                            key: "header_key",
-                            value: Some("header_value"),
-                        })),
-                    Duration::from_secs(0),
-                )
-                .await;
-
-            // This will be executed when the result is received.
-            eprintln!("Delivery status for message {} received", i);
-            delivery_status
-        })
-        .collect::<Vec<_>>();
-
-    // This loop will wait until all delivery statuses have been received.
-    for future in futures {
-        eprintln!("Future completed. Result: {:?}", future.await);
-    }
 }
 
 mod test_kafka_client {
