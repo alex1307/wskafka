@@ -3,11 +3,10 @@ use std::convert::Infallible;
 use std::fs;
 use std::sync::Arc;
 use std::sync::Once;
-use std::time::{self, Duration};
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use lazy_static::lazy_static;
-use log::info;
 use rdkafka_client::{read_from_kafka, KafkaClient};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::timeout;
@@ -115,7 +114,7 @@ async fn user_connected(ws: WebSocket, topics: Topics) {
     let mut topic: String = String::new();
     let mut group: String = String::new();
     while let Some(result) = user_ws_rx.next().await {
-        let msg = match result {
+        match result {
             Ok(msg) => {
                 eprintln!("message from user: {}: {:?}", my_topic.clone(), msg);
                 let bytes = msg.as_bytes();
@@ -149,8 +148,8 @@ async fn user_message(topic: String, group: String, topics: &Topics) {
     // Skip any non-Text messages...
 
     // New message from this user, send it to everyone else (except same uid)...
-    for (&ref uid, tx) in topics.read().await.iter() {
-        if topic.clone() == uid.to_owned() {
+    for (ref uid, tx) in topics.read().await.iter() {
+        if topic.clone() == uid.to_string() {
             let stream = read_from_kafka(vec![topic.clone()], &group).await;
             let timeout_duration = Duration::from_secs(5);
 
@@ -161,7 +160,7 @@ async fn user_message(topic: String, group: String, topics: &Topics) {
                     .for_each(|m| {
                         println!("Consumed message: {}", m);
                         let _ = tx.send(Message::text(m));
-                        return futures::future::ready(());
+                        futures::future::ready(())
                     })
                     .await;
             };

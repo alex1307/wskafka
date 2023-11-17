@@ -92,7 +92,7 @@ pub async fn connect_handler(
             &correlation_id, &broker
         );
         let mut kafka = KafkaClient::new(broker, username, password, mechanism, protocol);
-        if let Ok(_) = kafka.connect() {
+        if kafka.connect().is_ok() {
             clients
                 .write()
                 .await
@@ -165,7 +165,7 @@ pub async fn message_handler(body: Event, clients: Clients) -> Result<impl Reply
     };
     let mut messages: HashMap<String, String> = HashMap::new();
     for lines in body.message.lines() {
-        let key_value = lines.split(":").collect::<Vec<&str>>();
+        let key_value = lines.split(':').collect::<Vec<&str>>();
         if key_value.len() != 2 {
             messages.insert(lines.to_owned(), lines.to_owned());
         } else {

@@ -3,7 +3,6 @@ extern crate rdkafka;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::format;
 use log::info;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::BaseConsumer;
@@ -14,7 +13,6 @@ use rdkafka::TopicPartitionList;
 use futures::{stream, Stream, StreamExt};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use tokio::sync::mpsc::{self};
-use warp::filters::header::value;
 
 #[derive(Debug, Clone)]
 pub struct KafkaClient {
@@ -85,7 +83,7 @@ impl KafkaClient {
         };
         let mut txt = Vec::new();
 
-        txt.push(format!("Cluster information:"));
+        txt.push("Cluster information:".to_string());
         txt.push(format!("Broker count: {}", metadata.brokers().len()));
         txt.push(format!("  Topics count: {}", metadata.topics().len()));
         txt.push(format!(
@@ -106,7 +104,7 @@ impl KafkaClient {
             ));
         }
 
-        txt.push(format!("\nTopics:"));
+        txt.push("\nTopics:".to_string());
         for topic in metadata.topics() {
             if topic.name().starts_with(r#"__"#) {
                 continue;
@@ -204,7 +202,7 @@ impl KafkaClient {
                 .fetch_watermarks(topic.as_str(), 0, Duration::from_secs(10))
                 .map(|(_low, high)| high)
                 .unwrap();
-            let starting_offset = latest_offset.saturating_sub(value as i64);
+            let starting_offset = latest_offset.saturating_sub(value);
             let mut partition_list = TopicPartitionList::new();
             let _ = partition_list.add_partition_offset(
                 &topic,

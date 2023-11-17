@@ -1,9 +1,5 @@
 use crate::INIT_LOGGER;
-use log::{error, info};
-use std::{
-    fmt,
-    io::{Read, Write},
-};
+use log::info;
 
 pub fn configure_log4rs(file: &str) {
     INIT_LOGGER.call_once(|| {
