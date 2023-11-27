@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use lazy_static::lazy_static;
-use rdkafka_client::{read_from_kafka, KafkaClient};
+use log::error;
+use log::info;
+use rdkafka_client::KafkaClient;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::timeout;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -26,9 +29,14 @@ pub mod utils;
 
 lazy_static! {
     static ref INIT_LOGGER: Once = Once::new();
+    static ref CLIENTS: Arc<RwLock<HashMap<String, KafkaClient>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    static ref TOPICS: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    static ref CONTEXT: Arc<RwLock<HashMap<String, bool>>> = Arc::new(RwLock::new(HashMap::new())); 
 }
 
-type Topics = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<Message>>>>;
+type Topics = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<String>>>>;
 type Clients = Arc<RwLock<HashMap<String, KafkaClient>>>;
 
 #[tokio::main]
@@ -61,7 +69,7 @@ async fn main() {
         .and_then(message_handler);
 
     // GET /chat -> websocket upgrade
-    let chat = warp::path("chat")
+    let consumer = warp::path("messages")
         // The `ws()` filter will prepare Websocket handshake...
         .and(warp::ws())
         .and(topics)
@@ -77,7 +85,7 @@ async fn main() {
     });
 
     let routes = index
-        .or(chat)
+        .or(consumer)
         .or(connect_routes)
         .or(offset_routes)
         .or(publish_routes)
@@ -90,33 +98,37 @@ async fn user_connected(ws: WebSocket, topics: Topics) {
     // Use a counter to assign a new unique ID for this user.
     let my_topic = "test".to_owned();
 
-    eprintln!("new chat user: {}", &my_topic.clone());
+    info!("new chat user: {}", &my_topic.clone());
 
     // Split the socket into a sender and receive of messages.
     let (mut user_ws_tx, mut user_ws_rx) = ws.split();
 
     // Use an unbounded channel to handle buffering and flushing of messages
     // to the websocket...
-    let (tx, rx) = mpsc::unbounded_channel();
-    let mut rx = UnboundedReceiverStream::new(rx);
-
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    
     tokio::task::spawn(async move {
-        while let Some(message) = rx.next().await {
+        info!("starting to listen to messages");
+        while let Some(message) = rx.recv().await {
             user_ws_tx
-                .send(message)
+                .send(Message::text(message))
                 .unwrap_or_else(|e| {
-                    eprintln!("websocket send error: {}", e);
+                    info!("websocket send error: {}", e);
                 })
                 .await;
         }
+        info!("DONE");
     });
 
     let mut topic: String = String::new();
     let mut group: String = String::new();
+    let mut offset: String = String::new();
+    let mut correlation_id: String = String::new();
     while let Some(result) = user_ws_rx.next().await {
         match result {
             Ok(msg) => {
-                eprintln!("message from user: {}: {:?}", my_topic.clone(), msg);
+                info!("message from user: {}: {:?}", my_topic.clone(), msg);
+                let _ack = tx.send("connected".to_string());
                 let bytes = msg.as_bytes();
                 let map: HashMap<String, String> =
                     if let Ok(utf8_string) = std::str::from_utf8(bytes) {
@@ -124,19 +136,43 @@ async fn user_connected(ws: WebSocket, topics: Topics) {
                     } else {
                         HashMap::new()
                     };
-                if let (Some(t), Some(g)) = (map.get("topic"), map.get("group")) {
-                    topic = t.to_string();
-                    group = g.to_string();
-                    topics.write().await.insert(topic.clone(), tx.clone());
+                if let Some(value) = map.get("topic") {
+                    info!("creating topics entry for {}", value);
+                    topic = value.to_string();
+                    TOPICS.write().await.insert(topic.clone(), tx.clone());
                 }
+
+                if let Some(value) = map.get("correlation_id") {
+                    correlation_id = value.to_string();
+                }
+
+                if let Some(value) = map.get("offset") {
+                    offset = value.to_string();
+                }
+
+                if let Some(value) = map.get("group") {
+                    group = value.to_string();
+                } else {
+                    group = uuid::Uuid::new_v4().to_string();
+                }
+
+                if let Some(value) = map.get("disconnect"){
+                    if "true".eq_ignore_ascii_case(&value.trim()) {
+                        CONTEXT.write().await.insert(correlation_id.to_string(), true);
+                    }
+                }
+
                 msg
             }
             Err(e) => {
-                eprintln!("websocket error(uid={}): {}", &my_topic, e);
+                error!("websocket error(uid={}): {}", &my_topic, e);
                 break;
             }
         };
-        user_message(topic.clone(), group.clone(), &topics).await;
+
+        if let Some(kcat) = CLIENTS.read().await.get(&correlation_id) {
+            user_message(topic.clone(), group.clone(), tx.clone(), kcat).await;
+        }
     }
 
     // user_ws_rx stream will keep processing as long as the user stays
@@ -144,41 +180,47 @@ async fn user_connected(ws: WebSocket, topics: Topics) {
     user_disconnected("test".to_string(), &topics).await;
 }
 
-async fn user_message(topic: String, group: String, topics: &Topics) {
+async fn user_message(
+    topic: String,
+    group: String,
+    sender: UnboundedSender<String>,
+    kcat: &KafkaClient,
+) {
     // Skip any non-Text messages...
 
     // New message from this user, send it to everyone else (except same uid)...
-    for (ref uid, tx) in topics.read().await.iter() {
-        if topic.clone() == uid.to_string() {
-            let stream = read_from_kafka(vec![topic.clone()], &group).await;
-            let timeout_duration = Duration::from_secs(5);
 
-            // Create a new stream that completes or times out after the specified duration
+    let mut cloned = kcat.clone();
+    let stream = cloned.read_from_topic(
+        topic.clone(),
+        0,
+        &group,
+        rdkafka_client::Offset::Earliest,
+        Some(sender.clone()),
+        15
+    );
 
-            let timed_out_future = async {
-                stream
-                    .for_each(|m| {
-                        println!("Consumed message: {}", m);
-                        let _ = tx.send(Message::text(m));
-                        futures::future::ready(())
-                    })
-                    .await;
-            };
-
-            match timeout(timeout_duration, timed_out_future).await {
-                Ok(_) => println!("Stream completed"),
-                Err(_) => println!("Timeout occurred"),
-            }
-        }
-    }
+    stream
+        .await
+        .for_each(|_| {
+            // info!(">>> Consumed message: {}", m);
+            // if let Err(_) = sender.send(m) {
+            //     error!("failed sending message");
+            // } else {
+            //     info!("message sent");
+            // }
+            futures::future::ready(())
+        })
+        .await;
 }
+
 fn with_clients(clients: Clients) -> impl Filter<Extract = (Clients,), Error = Infallible> + Clone {
     warp::any().map(move || clients.clone())
 }
 
 async fn user_disconnected(my_id: String, topics: &Topics) {
-    eprintln!("good bye user: {}", my_id);
+    info!("good bye user: {}", my_id);
 
     // Stream closed up, so remove from the user list
-    topics.write().await.remove(&my_id);
+    TOPICS.write().await.remove(&my_id);
 }

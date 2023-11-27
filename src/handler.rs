@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{rdkafka_client::KafkaClient, Clients};
+use crate::{rdkafka_client::KafkaClient, Clients, CLIENTS};
 use log::info;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -61,7 +61,7 @@ pub async fn connect_handler(
     } else {
         Uuid::new_v4().to_string()
     };
-    let found = clients.read().await.get(&correlation_id).cloned();
+    let found = CLIENTS.read().await.get(&correlation_id).cloned();
     info!("correlation_id: {}", &correlation_id);
     let kafka = if let Some(client) = found {
         client.clone()
@@ -93,14 +93,14 @@ pub async fn connect_handler(
         );
         let mut kafka = KafkaClient::new(broker, username, password, mechanism, protocol);
         if kafka.connect().is_ok() {
-            clients
+            CLIENTS
                 .write()
                 .await
                 .insert(correlation_id.clone(), kafka.clone());
             info!(
                 "kafka client is created for : {:?}. All registered clients: {}",
                 &correlation_id,
-                clients.read().await.len()
+                CLIENTS.read().await.len()
             );
         } else {
             return Err(warp::reject::custom(AppErr {
@@ -129,7 +129,7 @@ pub async fn offset_handler(
     clients: Clients,
 ) -> Result<impl Reply, Rejection> {
     let correlation_id = body.correlation_id;
-    let found = clients.read().await.get(&correlation_id).cloned();
+    let found = CLIENTS.read().await.get(&correlation_id).cloned();
     info!("correlation_id: {}", &correlation_id);
     let kafka = if let Some(client) = found {
         client.clone()
@@ -154,7 +154,7 @@ pub async fn offset_handler(
 }
 
 pub async fn message_handler(body: Event, clients: Clients) -> Result<impl Reply, Rejection> {
-    let found = clients.read().await.get(&body.correlation_id).cloned();
+    let found = CLIENTS.read().await.get(&body.correlation_id).cloned();
 
     let mut kafka = if let Some(client) = found {
         client

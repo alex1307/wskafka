@@ -3,7 +3,7 @@ extern crate rdkafka;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use log::info;
+use log::{error, info};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::BaseConsumer;
 use rdkafka::consumer::{Consumer, StreamConsumer};
@@ -12,7 +12,10 @@ use rdkafka::TopicPartitionList;
 
 use futures::{stream, Stream, StreamExt};
 use rdkafka::producer::{FutureProducer, FutureRecord};
-use tokio::sync::mpsc::{self};
+use serde_json::error;
+use tokio::sync::mpsc::{self, UnboundedSender};
+
+use crate::CONTEXT;
 
 #[derive(Debug, Clone)]
 pub struct KafkaClient {
@@ -182,6 +185,8 @@ impl KafkaClient {
         partition: i32,
         group: &str,
         offset: Offset,
+        forward: Option<UnboundedSender<String>>,
+        timeout: u32,
     ) -> impl Stream<Item = String> {
         self.config.set("group.id", group);
         match offset {
@@ -211,35 +216,50 @@ impl KafkaClient {
             );
             let _ = consumer.assign(&partition_list);
         }
-
+        let mut wait_counter = 0;
         // Consume Kafka messages
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
+        let _ = tokio::task::spawn(async move {
             loop {
-                if let Some(m) = consumer.poll(Duration::from_secs(1)) {
+                if let Some(m) = consumer.poll(Duration::from_secs(10)) {
                     match m {
-                        Err(e) => println!("Kafka error: {}", e),
+                        Err(e) => error!("Kafka error: {}", e),
                         Ok(m) => {
-                            eprintln!(
+                            info!(
                                 "Consumed message: topic: {}, partition: {}, offset: {}",
                                 m.topic(),
                                 m.partition(),
                                 m.offset()
                             );
                             match m.payload_view::<str>() {
-                                None => println!("Error while deserializing message payload"),
+                                None => info!("Error while deserializing message payload"),
                                 Some(Ok(s)) => {
-                                    println!("Consumed message: topic: {}, partition: {}, offset: {}, payload: {}", m.topic(), m.partition(), m.offset(), s);
-                                    tx.send(s.to_string()).unwrap();
+                                    info!("+++Consumed message: topic: {}, partition: {}, offset: {}, payload: {}", m.topic(), m.partition(), m.offset(), s);
+                                    if let Err(_) = tx.send(s.to_string()) {
+                                        error!("Error sending message to channel");
+                                    }
+                                    if let Some(sender) = &forward {
+                                        if let Err(_) = sender.send(s.to_string()) {
+                                            error!("failed to send it to websocket");
+                                        }
+                                    }
                                 }
                                 Some(Err(e)) => {
-                                    println!("Error while deserializing message payload: {:?}", e)
+                                    info!("Error while deserializing message payload: {:?}", e)
                                 }
                             };
+                            wait_counter = 0;
                         }
                     };
                 } else {
-                    println!("No message available");
+                    wait_counter += 1;
+                    info!("No message available");
+                    if wait_counter >= timeout {
+                        if let Some(sender) = forward{
+                            let _ = sender.send(format!("disconnected from topic: {}", &topic));
+                        }
+                        break;
+                    }
                 }
             }
         });
@@ -312,55 +332,11 @@ impl KafkaClient {
     }
 }
 
-pub async fn read_from_kafka(topic: Vec<String>, group: &str) -> impl Stream<Item = String> {
-    let broker = "localhost:9094";
-
-    // Create a Kafka client configuration
-    let mut client_config = ClientConfig::new();
-    client_config
-        .set("bootstrap.servers", broker)
-        .set("security.protocol", "plaintext")
-        .set("group.id", group) // Specify your consumer group ID
-        .set("auto.offset.reset", "earliest"); // Set the offset reset option as needed
-
-    let consumer: StreamConsumer = client_config.create().expect("Consumer creation failed");
-    let str_slice: Vec<&str> = topic.iter().map(|s| s.as_str()).collect();
-    let topic_slice = str_slice.as_slice();
-    // Subscribe to Kafka topic(s)
-    consumer
-        .subscribe(topic_slice)
-        .expect("Failed to subscribe to topic");
-
-    // Consume Kafka messages
-    let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        loop {
-            if let Some(m) = consumer.stream().next().await {
-                match m {
-                    Err(e) => println!("Kafka error: {}", e),
-                    Ok(m) => {
-                        match m.payload_view::<str>() {
-                            None => println!("Error while deserializing message payload"),
-                            Some(Ok(s)) => {
-                                println!("Consumed message: topic: {}, partition: {}, offset: {}, payload: {}", m.topic(), m.partition(), m.offset(), s);
-                                tx.send(s.to_string()).unwrap();
-                            }
-                            Some(Err(e)) => {
-                                println!("Error while deserializing message payload: {:?}", e)
-                            }
-                        };
-                    }
-                };
-            }
-        }
-    });
-    stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|t| (t, rx)) })
-}
-
 mod test_kafka_client {
 
     use crate::utils::configure_log4rs;
     use futures_util::StreamExt;
+    use log::info;
 
     #[test]
     fn connect_to_kafka() {
@@ -373,13 +349,13 @@ mod test_kafka_client {
         assert!(matadata.contains("Cluster information:"));
         assert!(matadata.contains("Broker count:"));
         assert!(matadata.contains("Topics:"));
-        println!("{}", matadata);
+        info!("{}", matadata);
 
         let offsets = kafka.get_offsets().unwrap();
         assert!(offsets.contains("Low watermark:"));
         assert!(offsets.contains("High watermark:"));
         assert!(offsets.contains("Total message count:"));
-        println!("{}", offsets);
+        info!("{}", offsets);
     }
 
     #[tokio::test]
@@ -391,13 +367,20 @@ mod test_kafka_client {
         let connected = kafka.connect();
         assert_eq!(connected, Ok(()));
         let group = uuid::Uuid::new_v4().to_string();
-        eprint!("{}", group);
+        info!("{}", group);
         let stream = kafka
-            .read_from_topic(String::from("test"), 0, &group, super::Offset::Last(10))
+            .read_from_topic(
+                String::from("test"),
+                0,
+                &group,
+                super::Offset::Last(10),
+                None,
+                5,
+            )
             .await;
         stream
             .for_each(|msg| {
-                println!("{}", msg);
+                info!("{}", msg);
                 futures::future::ready(())
             })
             .await;
@@ -411,13 +394,20 @@ mod test_kafka_client {
         let connected = kafka.connect();
         assert_eq!(connected, Ok(()));
         let group = uuid::Uuid::new_v4().to_string();
-        eprint!("{}", group);
+        info!("{}", group);
         let stream = kafka
-            .read_from_topic(String::from("test"), 0, &group, super::Offset::Earliest)
+            .read_from_topic(
+                String::from("test"),
+                0,
+                &group,
+                super::Offset::Earliest,
+                None,
+                5,
+            )
             .await;
         stream
             .for_each(|msg| {
-                println!("{}", msg);
+                info!("{}", msg);
                 futures::future::ready(())
             })
             .await;

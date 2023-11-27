@@ -166,7 +166,7 @@
                 const connectBtn = document.getElementById('connectBtn');
                 const publishBtn = document.getElementById('publishBtn') // Added this line to get the button
                 const offsetBtn = document.getElementById('offsetBtn') // Added this line to get the button
-                const uri = 'ws://' + location.host + '/chat';  
+                const uri = 'ws://' + location.host + '/messages';  
                 const connect_uri = 'http://' + location.host + '/connect';
                 const offset_uri = 'http://' + location.host + '/offset';
                 const ws = new WebSocket(uri);
@@ -193,11 +193,12 @@
                     const topic = document.getElementById('topic').value;
                     const group = document.getElementById('group').value;
                     const offset = document.getElementById('offset').value;
-
+                    const correlation_id = document.getElementById('correlation_id').value;
                     const msg = {
-                        "topic": topic,
-                        "group": group,
-                        "offset": offset,
+                        topic,
+                        group,
+                        offset,
+                        correlation_id,
                     };
                     const msgString = JSON.stringify(msg);
                     ws.send(msgString);
